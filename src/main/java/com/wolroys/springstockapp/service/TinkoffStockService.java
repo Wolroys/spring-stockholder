@@ -8,7 +8,9 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import ru.tinkoff.piapi.contract.v1.GetOrderBookResponse;
 import ru.tinkoff.piapi.contract.v1.InstrumentShort;
+import ru.tinkoff.piapi.contract.v1.OrderBook;
 import ru.tinkoff.piapi.contract.v1.Quotation;
 import ru.tinkoff.piapi.core.InvestApi;
 
@@ -89,25 +91,41 @@ public class TinkoffStockService implements StockService{
         return CompletableFuture.completedFuture(new StocksDto(stocks));
     }
 
-    public StockPrice getPrice(String figi){ //TODO switch to instrumentId
-        var orderBook = api.getMarketDataService().getOrderBook(figi, 1);
-        Quotation quotation = orderBook.join().getLastPrice();
-
-        Double lastPrice = quotation.getUnits() == 0 && quotation.getNano() == 0
-                ? BigDecimal.ZERO.doubleValue()
-                : BigDecimal.valueOf(quotation.getUnits())
-                .add(BigDecimal.valueOf(quotation.getNano(), 9)).doubleValue();
-
-        return new StockPrice(figi, lastPrice);
+    @Async
+    public CompletableFuture<GetOrderBookResponse> getOrderBookByFigi(String figi) {
+        log.info("Getting price {} from Tinkoff", figi);
+        return api.getMarketDataService().getOrderBook(figi, 1);
     }
 
     public StocksPricesDto getPrices(FigiesDto figiesDto){
         long start = System.currentTimeMillis();
-        var stockPrices = figiesDto.getFigies().stream()
-                .map(this::getPrice)
+        List<CompletableFuture<GetOrderBookResponse>> responses = new ArrayList<>();
+
+        figiesDto.getFigies().forEach(figi -> responses.add(getOrderBookByFigi(figi)));
+
+        List<StockPrice> listPrices = responses.stream()
+                .map(CompletableFuture::join)
+                .peek(el -> {
+                    if (el == null){
+                        throw new StockNotFoundException("Stock not found");
+                    }
+                })
+                .map(response -> {
+                    Quotation quotation = response.getLastPrice();
+                    double lastPrice = quotation.getUnits() == 0 && quotation.getNano() == 0
+                            ? BigDecimal.ZERO.doubleValue()
+                            : BigDecimal.valueOf(quotation.getUnits())
+                            .add(BigDecimal.valueOf(quotation.getNano(), 9)).doubleValue();
+
+                    return new StockPrice(
+                            response.getFigi(),
+                            lastPrice
+                    );
+                })
                 .toList();
 
         log.info("Time - {}", System.currentTimeMillis() - start);
-        return new StocksPricesDto(stockPrices);
+
+        return new StocksPricesDto(listPrices);
     }
 }
