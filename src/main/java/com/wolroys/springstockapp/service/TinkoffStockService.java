@@ -1,16 +1,19 @@
 package com.wolroys.springstockapp.service;
 
-import com.wolroys.springstockapp.dto.StocksDto;
-import com.wolroys.springstockapp.dto.TickersDto;
+import com.wolroys.springstockapp.dto.*;
 import com.wolroys.springstockapp.exception.StockNotFoundException;
 import com.wolroys.springstockapp.model.Currency;
 import com.wolroys.springstockapp.model.Stock;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import ru.tinkoff.piapi.contract.v1.InstrumentShort;
+import ru.tinkoff.piapi.contract.v1.Quotation;
 import ru.tinkoff.piapi.core.InvestApi;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -18,6 +21,7 @@ import java.util.concurrent.CompletableFuture;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class TinkoffStockService implements StockService{
 
     private final InvestApi api;
@@ -83,5 +87,27 @@ public class TinkoffStockService implements StockService{
                 )).toList();
 
         return CompletableFuture.completedFuture(new StocksDto(stocks));
+    }
+
+    public StockPrice getPrice(String figi){ //TODO switch to instrumentId
+        var orderBook = api.getMarketDataService().getOrderBook(figi, 1);
+        Quotation quotation = orderBook.join().getLastPrice();
+
+        Double lastPrice = quotation.getUnits() == 0 && quotation.getNano() == 0
+                ? BigDecimal.ZERO.doubleValue()
+                : BigDecimal.valueOf(quotation.getUnits())
+                .add(BigDecimal.valueOf(quotation.getNano(), 9)).doubleValue();
+
+        return new StockPrice(figi, lastPrice);
+    }
+
+    public StocksPricesDto getPrices(FigiesDto figiesDto){
+        long start = System.currentTimeMillis();
+        var stockPrices = figiesDto.getFigies().stream()
+                .map(this::getPrice)
+                .toList();
+
+        log.info("Time - {}", System.currentTimeMillis() - start);
+        return new StocksPricesDto(stockPrices);
     }
 }
